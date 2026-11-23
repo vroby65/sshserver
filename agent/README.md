@@ -10,6 +10,8 @@ alla UI tramite `GLib.idle_add`. Mantieni un solo lavoro in corso e rimuovi il
 timer alla chiusura. Considera il socket di attivazione nel calcolo dello
 stato e fermalo insieme al servizio. Le modifiche di stato passano da `pkexec`
 e riguardano solo le due unità SSH gestite dall'applet.
+L'opzione `--watch-stdin` collega la durata dell'applet alla pipe aperta dal
+pannello. L'avvio autonomo usa i segnali del processo per la chiusura.
 
 Aggiorna `tests/test_ssh_server.py` per le modifiche di stato, menu e polling.
 Usa `tests/test_entrypoint.py` per le modifiche all'avvio. I test simulano

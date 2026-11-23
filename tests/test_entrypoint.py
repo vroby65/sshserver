@@ -33,6 +33,29 @@ class EntrypointTests(unittest.TestCase):
                          [signal.SIGINT, signal.SIGTERM])
         self.assertEqual([call.args[0] for call in remove.call_args_list], [42, 43])
         tray.return_value.close.assert_called_once_with()
+        tray.assert_called_once_with(sshserver.show_ssh_error, 24)
+
+    def test_supervised_tray_uses_requested_icon_size(self):
+        with (
+            patch("sshserver.SSHServerTray") as tray,
+            patch("sshserver.Gtk.main"),
+            patch("sshserver.GLib.unix_signal_add", side_effect=[42, 43]),
+            patch("sshserver.GLib.io_add_watch", return_value=44) as watch,
+            patch("sshserver.GLib.source_remove") as remove,
+        ):
+            self.assertEqual(sshserver.main(["--icon-size", "16", "--watch-stdin"]), 0)
+
+        tray.assert_called_once_with(sshserver.show_ssh_error, 16)
+        self.assertEqual(watch.call_args.args[0], sys.stdin.fileno())
+        self.assertEqual(watch.call_args.args[2], sshserver.GLib.IO_HUP)
+        remove.assert_any_call(44)
+
+    def test_supervised_process_exits_when_parent_closes_pipe(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "sshserver", "--watch-stdin"], input="",
+            env={**os.environ, "PATH": ""}, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def run_without_display(self, *args):
         env = os.environ.copy()

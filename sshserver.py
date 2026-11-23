@@ -3,6 +3,7 @@
 import argparse
 import signal
 import subprocess
+import sys
 import threading
 from typing import Callable
 
@@ -167,26 +168,32 @@ def show_ssh_error(message: str) -> None:
     dialog.show()
 
 
-def _quit_tray() -> bool:
+def _quit_tray(*_args) -> bool:
     Gtk.main_quit()
     return GLib.SOURCE_CONTINUE
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sshserver", description="Controlla il server SSH dal tray.")
-    parser.parse_args(argv)
+    parser.add_argument("--icon-size", type=int, default=24, help="dimensione dell'icona in pixel")
+    parser.add_argument("--watch-stdin", action="store_true", help="esci quando il processo padre chiude la pipe")
+    options = parser.parse_args(argv)
     if not isinstance(Gdk.Display.get_default(), GdkX11.X11Display):
         parser.exit(1, "sshserver richiede una sessione X11 con un tray XEmbed.\n")
 
-    tray = SSHServerTray(show_ssh_error, 24)
-    signal_sources = [
+    tray = SSHServerTray(show_ssh_error, options.icon_size)
+    sources = [
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, _quit_tray)
         for sig in (signal.SIGINT, signal.SIGTERM)
     ]
+    if options.watch_stdin:
+        sources.append(GLib.io_add_watch(
+            sys.stdin.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_HUP, _quit_tray,
+        ))
     try:
         Gtk.main()
     finally:
-        for source in signal_sources:
+        for source in sources:
             GLib.source_remove(source)
         tray.close()
     return 0

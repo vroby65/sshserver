@@ -30,6 +30,12 @@ quando presente. Le impostazioni di avvio di systemd restano come configurate.
 
 Per chiudere l'applet avviata in primo piano, premi Ctrl+C nel terminale.
 
+## Integrazione con AI-bar
+
+AI-bar installa `sshserver` come dipendenza e lo avvia come processo separato.
+Imposta le dimensioni dell'icona con `--icon-size` e usa `--watch-stdin` per
+chiudere l'applet quando il pannello chiude la pipe di supervisione.
+
 ## Test
 
 Con `xvfb` e `xauth` installati, esegui i test in un display isolato.
