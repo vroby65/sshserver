@@ -24,9 +24,18 @@ Per provare l'applet dalla cartella del repository puoi anche usare `/usr/bin/py
 
 L'icona è verde quando il servizio SSH o il suo socket di attivazione è in
 funzione. È grigia quando SSH è spento, assente o quando lo stato è indisponibile.
-Fai clic sull'icona e scegli **Attiva** o **Disattiva**. Polkit chiede
-l'autorizzazione per eseguire l'operazione. **Disattiva** ferma anche il socket,
-quando presente. Le impostazioni di avvio di systemd restano come configurate.
+Fai clic sull'icona per aprire la finestra con **Avvia**, **Ferma** e i log
+di OpenSSH. Il clic destro apre il menu rapido **Attiva** o **Disattiva**.
+Polkit chiede l'autorizzazione per cambiare lo stato del servizio. L'arresto
+ferma anche il socket, quando presente. Le impostazioni di avvio di systemd
+restano come configurate.
+
+La finestra mostra gli ultimi 200 eventi del journal, dai più recenti. Puoi
+cercare un utente, un IP o un testo e limitare il risultato ad accessi riusciti,
+tentativi falliti oppure connessioni e sessioni. La lettura usa i permessi del
+tuo utente sul journal e si aggiorna ogni cinque secondi mentre la finestra
+è aperta. OpenSSH registra le attività previste dalla configurazione del server.
+La registrazione dei comandi dentro una sessione richiede un audit dedicato.
 
 Per chiudere l'applet avviata in primo piano, premi Ctrl+C nel terminale.
 

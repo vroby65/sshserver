@@ -48,6 +48,140 @@ def set_ssh_active(active: bool, units: tuple[str, ...]) -> None:
         )
 
 
+def read_ssh_logs() -> tuple[list[str], str]:
+    result = subprocess.run(
+        ["journalctl", "--no-pager", "--reverse", "--lines=200", "--output=short-iso",
+         "--no-hostname", "--unit=ssh.service", "--unit=ssh.socket"],
+        capture_output=True, text=True, errors="replace", timeout=5,
+    )
+    warning = result.stderr.strip()
+    if result.returncode:
+        raise RuntimeError(warning or "Journal di OpenSSH non disponibile")
+    return [line for line in result.stdout.splitlines() if line != "-- No entries --"], warning
+
+
+def _log_category(line: str) -> str:
+    prefix, separator, message = line.partition("]: ")
+    source = prefix.rsplit(" ", 1)[-1].partition("[")[0]
+    if not separator or source not in ("sshd", "sshd-session", "sshd-auth"):
+        return "other"
+    message = message.casefold()
+    if message.startswith("accepted ") and " for " in message and " from " in message:
+        return "accepted"
+    if (message.startswith(("failed ", "invalid user ", "did not receive identification string "))
+            or any(text in message for text in (
+                "invalid user ", "authentication failure", "maximum authentication attempts", "not allowed because",
+            ))):
+        return "failed"
+    if (message.startswith(("connection from ", "connection closed ", "disconnected from ",
+                            "received disconnect ", "starting session:", "close session:"))
+            or "session opened for " in message or "session closed for " in message):
+        return "session"
+    return "other"
+
+
+def filter_ssh_logs(lines: list[str], category: str, query: str) -> list[str]:
+    terms = query.casefold().split()
+    return [line for line in lines
+            if (category == "all" or _log_category(line) == category)
+            and all(term in line.casefold() for term in terms)]
+
+
+class SSHServerWindow(Gtk.Window):
+    def __init__(self, request_state: Callable[[bool], None]) -> None:
+        super().__init__(title="Server SSH", default_width=860, default_height=480, border_width=12)
+        self._reading = False
+        self._destroyed = False
+        self._records: list[str] | None = None
+        self._warning = ""
+        self._rendered = ""
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.add(content)
+        controls = Gtk.Box(spacing=8)
+        self.status = Gtk.Label(label="Verifica dello stato…", xalign=0)
+        controls.pack_start(self.status, True, True, 0)
+        self.start = Gtk.Button(label="Avvia", sensitive=False)
+        self.stop = Gtk.Button(label="Ferma", sensitive=False)
+        self.start.connect("clicked", lambda _button: request_state(True))
+        self.stop.connect("clicked", lambda _button: request_state(False))
+        controls.pack_start(self.start, False, False, 0)
+        controls.pack_start(self.stop, False, False, 0)
+        content.pack_start(controls, False, False, 0)
+
+        content.pack_start(Gtk.Label(label="Log OpenSSH", xalign=0), False, False, 0)
+        filters = Gtk.Box(spacing=8)
+        self.search = Gtk.SearchEntry(placeholder_text="Filtra per utente, IP o testo")
+        filters.pack_start(self.search, True, True, 0)
+        self.category = Gtk.ComboBoxText()
+        for key, title in (("all", "Tutti gli eventi"), ("accepted", "Accessi riusciti"),
+                           ("failed", "Tentativi falliti"), ("session", "Connessioni e sessioni")):
+            self.category.append(key, title)
+        self.category.set_active_id("all")
+        filters.pack_start(self.category, False, False, 0)
+        content.pack_start(filters, False, False, 0)
+
+        self.log = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                wrap_mode=Gtk.WrapMode.WORD_CHAR, left_margin=8, right_margin=8,
+                                top_margin=8, bottom_margin=8)
+        scroller = Gtk.ScrolledWindow(shadow_type=Gtk.ShadowType.IN)
+        scroller.add(self.log)
+        content.pack_start(scroller, True, True, 0)
+        self.log_status = Gtk.Label(label="Lettura dei log…", xalign=0, wrap=True)
+        content.pack_start(self.log_status, False, False, 0)
+
+        self.search.connect("changed", self._render_logs)
+        self.category.connect("changed", self._render_logs)
+        self.connect("show", lambda _window: self.refresh_logs())
+        self.connect("delete-event", lambda window, _event: window.hide_on_delete())
+        self.connect("destroy", self._on_destroy)
+        content.show_all()
+
+    def refresh_logs(self) -> None:
+        if not self._reading:
+            self._reading = True
+            threading.Thread(target=self._read_logs, daemon=True).start()
+
+    def _read_logs(self) -> None:
+        try:
+            records, warning = read_ssh_logs()
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            records, warning = None, f"Impossibile leggere i log: {exc}"
+        GLib.idle_add(self._finish_logs, records, warning)
+
+    def _finish_logs(self, records: list[str] | None, warning: str) -> bool:
+        if self._destroyed:
+            return False
+        self._reading = False
+        if records is not None:
+            self._records = records
+        self._warning = warning
+        self._render_logs()
+        return False
+
+    def _render_logs(self, *_args) -> None:
+        records = self._records or []
+        matching = filter_ssh_logs(records, self.category.get_active_id(), self.search.get_text())
+        text = "\n".join(matching)
+        if text != self._rendered:
+            self.log.get_buffer().set_text(text)
+            self._rendered = text
+        if self._warning:
+            status = self._warning
+        elif self._records is None:
+            status = "Lettura dei log…"
+        elif not records:
+            status = "Nessun evento OpenSSH nel journal."
+        elif not matching:
+            status = "Nessun evento corrispondente ai filtri."
+        else:
+            status = f"{len(matching)} di {len(records)} eventi recenti"
+        self.log_status.set_text(status)
+
+    def _on_destroy(self, _window: Gtk.Window) -> None:
+        self._destroyed = True
+
+
 class SSHServerTray:
     def __init__(self, show_error: Callable[[str], None], icon_size: int) -> None:
         self._show_error = show_error
@@ -55,6 +189,7 @@ class SSHServerTray:
         self._busy = False
         self._active = False
         self._units: tuple[str, ...] = ()
+        self.window = SSHServerWindow(self._request_state)
         icon_info = Gtk.IconTheme.get_default().choose_icon(
             ["network-server-symbolic", "image-missing-symbolic"],
             icon_size, Gtk.IconLookupFlags.FORCE_SIZE,
@@ -77,7 +212,7 @@ class SSHServerTray:
         )
         self.icon.connect("notify::embedded", self._fit_icon)
         self._fit_icon()
-        self.icon.connect("activate", lambda icon: self._popup(icon, 0, Gtk.get_current_event_time()))
+        self.icon.connect("activate", lambda _icon: self.window.present())
         self.icon.connect("popup-menu", self._popup)
         self._poll_id = GLib.timeout_add_seconds(5, self._refresh)
         self._refresh()
@@ -100,17 +235,25 @@ class SSHServerTray:
             return False
         if not self._busy:
             self._start_work(None)
+        if self.window.get_visible():
+            self.window.refresh_logs()
         return True
 
     def _toggle(self, _item: Gtk.MenuItem) -> None:
-        if self._closed or self._busy or not self._units:
+        self._request_state(not self._active)
+
+    def _request_state(self, active: bool) -> None:
+        if self._closed or self._busy or not self._units or active == self._active:
             return
         self.icon.props.tooltip_text = "Server SSH: operazione in corso…"
-        self._start_work(not self._active)
+        self.window.status.set_text("Avvio in corso…" if active else "Arresto in corso…")
+        self._start_work(active)
 
     def _start_work(self, active: bool | None) -> None:
         self._busy = True
         self.action.set_sensitive(False)
+        self.window.start.set_sensitive(False)
+        self.window.stop.set_sensitive(False)
         threading.Thread(target=self._work, args=(active,), daemon=True).start()
 
     def _work(self, active: bool | None) -> None:
@@ -145,6 +288,9 @@ class SSHServerTray:
         self.icon.props.tooltip_text = f"Server SSH: {status}"
         self.action.set_label(action)
         self.action.set_sensitive(bool(self._units))
+        self.window.status.set_text(f"Server SSH: {status}")
+        self.window.start.set_sensitive(bool(self._units) and not self._active)
+        self.window.stop.set_sensitive(bool(self._units) and self._active)
         if error:
             self._show_error(f"Server SSH: {error}")
         return False
@@ -156,6 +302,7 @@ class SSHServerTray:
         GLib.source_remove(self._poll_id)
         self.icon.props.visible = False
         self.menu.destroy()
+        self.window.destroy()
 
 
 def show_ssh_error(message: str) -> None:
