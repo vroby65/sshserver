@@ -143,6 +143,29 @@ class SSHServerTrayTests(unittest.TestCase):
         window.stop.emit("clicked")
         self.assertIs(self.worker.call_args.kwargs["args"][0], False)
 
+    def test_window_has_fixed_size_and_distinct_action_styles(self):
+        window = self.tray.window
+        self.assertEqual(tuple(window.get_default_size()), (860, 480))
+        self.assertFalse(window.get_resizable())
+        self.assertTrue(window.start.get_style_context().has_class("ssh-start"))
+        self.assertTrue(window.stop.get_style_context().has_class("ssh-stop"))
+
+    def test_log_colors_follow_event_type_after_filtering(self):
+        window = self.tray.window
+        window._finish_logs([
+            "sshd[1]: Accepted publickey for alice from 192.0.2.10",
+            "sshd[2]: Failed password for bob from 192.0.2.20",
+            "sshd[1]: pam_unix(sshd:session): session closed for user alice",
+            "systemd[1]: Started ssh.service",
+        ], "")
+        buffer = window.log.get_buffer()
+        self.assertEqual([
+            [tag.props.name for tag in buffer.get_iter_at_line(index).get_tags()]
+            for index in range(4)
+        ], [["accepted"], ["failed"], ["session"], []])
+        window.category.set_active_id("failed")
+        self.assertEqual([tag.props.name for tag in buffer.get_start_iter().get_tags()], ["failed"])
+
     def test_window_filters_rendered_log_and_shows_read_error(self):
         window = self.tray.window
         accepted = "sshd[1]: Accepted publickey for alice from 192.0.2.10"

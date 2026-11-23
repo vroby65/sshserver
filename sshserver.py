@@ -12,7 +12,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkX11", "3.0")
-from gi.repository import Gdk, GdkX11, GLib, Gtk
+from gi.repository import Gdk, GdkX11, GLib, Gtk, Pango
 
 
 def read_ssh_state() -> tuple[bool, tuple[str, ...]]:
@@ -89,7 +89,8 @@ def filter_ssh_logs(lines: list[str], category: str, query: str) -> list[str]:
 
 class SSHServerWindow(Gtk.Window):
     def __init__(self, request_state: Callable[[bool], None]) -> None:
-        super().__init__(title="Server SSH", default_width=860, default_height=480, border_width=12)
+        super().__init__(title="Server SSH", default_width=860, default_height=480,
+                         resizable=False, border_width=12)
         self._reading = False
         self._destroyed = False
         self._records: list[str] | None = None
@@ -103,6 +104,23 @@ class SSHServerWindow(Gtk.Window):
         controls.pack_start(self.status, True, True, 0)
         self.start = Gtk.Button(label="Avvia", sensitive=False)
         self.stop = Gtk.Button(label="Ferma", sensitive=False)
+        style = Gtk.CssProvider()
+        style.load_from_data(b"""
+            button.ssh-start, button.ssh-stop {
+                background-image: none;
+                color: white;
+                text-shadow: none;
+            }
+            button.ssh-start { background-color: #237045; }
+            button.ssh-start:hover { background-color: #2b7e50; }
+            button.ssh-stop { background-color: #a12d35; }
+            button.ssh-stop:hover { background-color: #b2353e; }
+            button.ssh-start:disabled, button.ssh-stop:disabled { opacity: 0.5; }
+        """)
+        for button, css_class in ((self.start, "ssh-start"), (self.stop, "ssh-stop")):
+            context = button.get_style_context()
+            context.add_class(css_class)
+            context.add_provider(style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.start.connect("clicked", lambda _button: request_state(True))
         self.stop.connect("clicked", lambda _button: request_state(False))
         controls.pack_start(self.start, False, False, 0)
@@ -124,10 +142,15 @@ class SSHServerWindow(Gtk.Window):
         self.log = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
                                 wrap_mode=Gtk.WrapMode.WORD_CHAR, left_margin=8, right_margin=8,
                                 top_margin=8, bottom_margin=8)
+        buffer = self.log.get_buffer()
+        self._log_tags = {kind: buffer.create_tag(kind) for kind in ("accepted", "failed", "session")}
+        self.log.connect("style-updated", self._update_log_colors)
+        self._update_log_colors(self.log)
         scroller = Gtk.ScrolledWindow(shadow_type=Gtk.ShadowType.IN)
         scroller.add(self.log)
         content.pack_start(scroller, True, True, 0)
-        self.log_status = Gtk.Label(label="Lettura dei log…", xalign=0, wrap=True)
+        self.log_status = Gtk.Label(label="Lettura dei log…", xalign=0, single_line_mode=True,
+                                    ellipsize=Pango.EllipsizeMode.END)
         content.pack_start(self.log_status, False, False, 0)
 
         self.search.connect("changed", self._render_logs)
@@ -159,12 +182,29 @@ class SSHServerWindow(Gtk.Window):
         self._render_logs()
         return False
 
+    def _update_log_colors(self, view: Gtk.TextView) -> None:
+        text = view.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        if text.red + text.green + text.blue > 1.5:
+            colors = ("#8bd6a6", "#ff9d9d", "#9cc5fd")
+        else:
+            colors = ("#216b40", "#a12d35", "#225c9f")
+        for tag, color in zip(self._log_tags.values(), colors):
+            tag.props.foreground = color
+
     def _render_logs(self, *_args) -> None:
         records = self._records or []
         matching = filter_ssh_logs(records, self.category.get_active_id(), self.search.get_text())
         text = "\n".join(matching)
         if text != self._rendered:
-            self.log.get_buffer().set_text(text)
+            buffer = self.log.get_buffer()
+            buffer.set_text(text)
+            for index, line in enumerate(matching):
+                tag = self._log_tags.get(_log_category(line))
+                if tag is not None:
+                    start = buffer.get_iter_at_line(index)
+                    end = start.copy()
+                    end.forward_to_line_end()
+                    buffer.apply_tag(tag, start, end)
             self._rendered = text
         if self._warning:
             status = self._warning
@@ -177,6 +217,7 @@ class SSHServerWindow(Gtk.Window):
         else:
             status = f"{len(matching)} di {len(records)} eventi recenti"
         self.log_status.set_text(status)
+        self.log_status.set_tooltip_text(self._warning or None)
 
     def _on_destroy(self, _window: Gtk.Window) -> None:
         self._destroyed = True
